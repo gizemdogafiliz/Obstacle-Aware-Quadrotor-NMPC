@@ -144,7 +144,7 @@ vehicle to the hover point.
 
 <table align="center">
 <tr>
-<td align="center"><img src="assets/backflip_analysis.png" width="300"/></td>
+<td align="center"><img src="assets/backflip_analysis.png" width="382"/></td>
 <td>
 <table>
 <tr><th align="left">Metric</th><th align="left">Value</th></tr>
