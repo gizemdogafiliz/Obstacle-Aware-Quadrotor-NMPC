@@ -1,55 +1,209 @@
-# Quadrotor NMPC — Obstacle-Aware Local Planner
+# Obstacle-Aware Quadrotor Control via Nonlinear MPC
 
-An **acados SQP-RTI** based Nonlinear MPC controller for a quadrotor.
+A quaternion **Nonlinear Model Predictive Control (NMPC)** framework for quadrotor
+**obstacle avoidance** and **aggressive maneuvers**, built on acados SQP-RTI and
+evaluated in Gazebo.
 
-Includes a 5th-order polynomial global trajectory generator, obstacle avoidance with soft constraints, and Gazebo simulation integration.
+<p align="center">
+  <img src="assets/pure_mpc_demo.gif" height="300"/>
+  <img src="assets/backflip_short.gif" height="300"/>
+</p>
 
-**Politecnico di Milano — Aerial Robotics 2025-26**
+The project asks a concrete question:
+
+> **Where should obstacle avoidance live** — as a formal keep-out constraint
+> *inside* the NMPC, or in a separate Artificial Potential Field (APF) planner
+> whose collision-free references the NMPC merely tracks?
+
+Both are implemented on the *same* controller and the *same* lidar perception,
+then compared head-to-head at a matched obstacle clearance, so only the
+architecture differs.
 
 ---
 
-## Table of Contents
+## Highlights
 
-* [Overview](#overview)
-* [System Requirements](#system-requirements)
-* [Installation](#installation)
-* [Project Structure](#project-structure)
-* [Configuration](#configuration)
-* [Testing and Usage](#testing-and-usage)
-* [Obstacle Avoidance](#obstacle-avoidance)
-* [Log Analysis](#log-analysis)
+- **Quaternion NMPC** (13-state, acados SQP-RTI + HPIPM, 1 s horizon, 20 Hz) — singularity-free attitude.
+- **In-MPC keep-out constraint** vs **APF-reference tracking** — a controlled comparison at matched clearance.
+- **Lidar + DBSCAN perception** feeding a reactive APF horizon — no pre-planned waypoints.
+- **Backflip** with a feedforward Lupashin profile and **genuine NMPC recovery**.
+- Real-time: average solve time **8.6 ms**, well within the 50 ms budget.
 
 ---
 
-## Overview
+## Obstacle Avoidance: In-MPC vs APF
 
-```
-State  x ∈ R^13  :  [px, py, pz,  vx, vy, vz,  qw, qx, qy, qz,  p, q, r]
-Input  u ∈ R^4   :  [f_total, τx, τy, τz]
+On an in-line slalom (five obstacles on the start–goal line) at a matched
+**≈0.9 m** clearance, avoidance computed *inside* the NMPC is reliable up to
+**1.5 m/s**, while the APF-reference tracker reaches **2.2 m/s**. A wide-clearance
+APF goes further (**2.81 m/s**) — but the advantage comes from its **wider
+look-ahead**, not the architecture: tighten the APF to the same clearance and the
+gap nearly vanishes.
+
+<p align="center">
+  <img src="assets/pure_mpc_crop.gif" height="300"/>
+  <img src="assets/apf_crop.gif" height="300"/>
+  <img src="assets/apf_wide_crop.gif" height="300"/>
+</p>
+
+<p align="center">
+  <em>Left to right: in-MPC keep-out (1.5 m/s), APF-reference tracking (3.0 m/s),
+  wide APF.</em>
+</p>
+
+<p align="center">
+  <img src="assets/avoidance_comparison.png" width="382"/>
+</p>
+
+> **(a)** Paths for the three configurations. **(b)** Maximum reliable speed.
+> The wide planner keeps more room and turns earlier; at matched clearance the
+> two architectures are close.
+
+**Run it** — Terminal 1 (in-line slalom world):
+
+```bash
+bash simulation_obstacles.sh worlds/quad_obstacles_line.world
 ```
 
-| Component | Description |
+Terminal 2:
+
+```python
+>>> setup(perception_level=2)                              # lidar + DBSCAN
+>>> slalom_mpc_avoid(max_vel=1.5)                          # in-MPC keep-out (pure-MPC)
+>>> slalom_reactive(use_perception=True, max_vel=2.2,
+...                  apf_d0=0.3, apf_R_drone=0.20)         # APF tight (matched clearance)
+>>> slalom_reactive(use_perception=True, max_vel=2.8)      # APF wide
+```
+
+### Shared failure mode
+
+Above each mode's limit, every configuration fails the *same* way: the avoidance
+tilt grows until the thrust axis points sideways, the vehicle accelerates
+horizontally instead of supporting itself, and an **attitude runaway** collapses
+the flight. The limit is set by the vehicle dynamics, not the solver.
+
+<p align="center">
+  <img src="assets/attitude_runaway.png" width="382"/>
+</p>
+
+### Pure-MPC flight
+
+With a goal-only reference plus the keep-out constraint, the lateral motion is
+produced *entirely* by the controller — clearance to every obstacle stays above
+the drone radius while thrust and torque remain within bounds.
+
+<p align="center">
+  <img src="assets/slalom_pure_mpc.png" width="382"/>
+</p>
+
+### Reactive APF in a dense slalom
+
+In APF-reference mode the planner reacts online to a denser, alternating-obstacle
+course: the potential field is evaluated at the current position each step and
+integrated forward to build the NMPC reference, so the drone weaves through
+without any pre-planned path.
+
+<p align="center">
+  <img src="assets/apf_dense_demo.gif" height="300"/>
+  <img src="assets/apf_dense.png" height="300"/>
+</p>
+
+**Run it** — Terminal 1 (dense slalom world):
+
+```bash
+bash simulation_obstacles.sh worlds/quad_obstacles_dense.world
+```
+
+Terminal 2:
+
+```python
+>>> setup(perception_level=2)
+>>> slalom_reactive(use_perception=True, max_vel=2.5)
+```
+
+---
+
+## Backflip
+
+A full 360° backflip uses a feedforward bang-coast-bang torque profile
+(open-loop, since the rotation is longer than the 1 s horizon), and the **NMPC
+handles the recovery**: a brief rate-kill brings the body rates into the solver's
+basin, then the NMPC stabilises the attitude, arrests the drift and returns the
+vehicle to the hover point.
+
+<table align="center">
+<tr>
+<td align="center"><img src="assets/backflip_demo.gif" height="300"/></td>
+<td align="center"><img src="assets/backflip_xy.png" height="300"/></td>
+<td>
+<table>
+<tr><th align="left">Metric</th><th align="left">Value</th></tr>
+<tr><td>Flip duration</td><td>~0.73 s</td></tr>
+<tr><td>Peak pitch rate</td><td>~9.5 rad/s</td></tr>
+<tr><td>Peak lateral drift</td><td>~1.7 m</td></tr>
+<tr><td>Landing error</td><td>~0.1 m</td></tr>
+<tr><td>Recovery</td><td>NMPC</td></tr>
+</table>
+</td>
+</tr>
+</table>
+
+<p align="center">
+  <em>Left: the maneuver. Centre: top view of the flip-and-recover trajectory —
+  pushed laterally during the open-loop rotation, then pulled back to hover by
+  the NMPC. Right: key metrics.</em>
+</p>
+
+<p align="center">
+  <img src="assets/backflip_analysis.png" width="382"/>
+</p>
+
+**Run it** — Terminal 1 (empty world, needs altitude clearance):
+
+```bash
+bash simulation.sh
+```
+
+Terminal 2:
+
+```python
+>>> setup()
+>>> backflip_mpc_recovery()   # feedforward flip + NMPC recovery (paper version)
+```
+
+---
+
+## Real-Time Performance
+
+Every optimal control problem must solve within the 50 ms sampling period for the
+receding-horizon loop to run online. It comfortably does.
+
+<table align="center">
+<tr>
+<td align="center"><img src="assets/solver_time.png" width="382"/></td>
+<td>
+<table>
+<tr><th></th><th>Slalom</th><th>Backflip</th></tr>
+<tr><td>Mean solve time</td><td>8.6 ms</td><td>8.2 ms</td></tr>
+<tr><td>Max</td><td>21.4 ms</td><td>15.0 ms</td></tr>
+<tr><td>Within 50 ms</td><td>100%</td><td>100%</td></tr>
+</table>
+</td>
+</tr>
+</table>
+
+---
+
+## How It Works
+
+| Component | Summary |
 | --- | --- |
-| `local_planner_mpc.py` | Obstacle-aware NMPC (acados SQP-RTI, N=20, Ts=50ms) |
-| `mpc_solver.py` | Core QuadrotorMPC (landing cone constraints) |
-| `quadrotor_model.py` | CasADi/acados dynamic model (quaternion-based) |
-| `global_planner.py` | WaypointTrajectory, BackflipTrajectory, APFTrajectory |
-| `perception.py` | PerceptionManager (Gazebo GT / 2D Lidar / Static) |
-| `quadrotor_mpc_client_v3.py` | Main control loop and public API |
-| `plot_mpc_log.py` | Log visualization and auto-save to `plots/` |
-| `plot_backflip_paper.py` | Paper-ready backflip analysis plots |
-| `plot_apf_field.py` | APF force field + potential visualization |
-
-**Features:**
-
-* Quaternion-based NMPC (no Euler angle singularities)
-* 1.0s prediction horizon (N=20, Ts=50ms), SQP-RTI single iteration
-* APF-based obstacle avoidance: offline path planning + MPC tracking
-* Backflip: Lupashin 5-phase bang-coast-bang; feedforward flip with SO(3) PD or NMPC recovery
-* Landing cone constraint: vz + α·z ≥ 0 (prevents hard landings)
-* "+" configuration motor mixer with feasibility checking
-* Quintic polynomial multi-waypoint trajectory generation
-* Shared log session: takeoff + flight + landing in a single `.npz` file
+| **Model** | 13-state rigid body `[p, v, q, ω]`, quaternion attitude, ERK4 integration |
+| **NMPC** | acados SQP-RTI, HPIPM QP, N=20, Ts=50 ms, Gauss–Newton Hessian |
+| **Keep-out** | soft constraint `‖p − p_obs‖² − (r + R_d)² ≥ 0` per obstacle, online lidar parameters |
+| **APF** | attractive + repulsive field, reactive horizon builder feeding per-step references |
+| **Perception** | 2-D lidar → DBSCAN clustering → bounding-circle obstacles, 20 Hz |
+| **Backflip** | Lupashin 5-phase feedforward + open-loop rate-kill + NMPC recovery |
 
 ---
 
@@ -103,441 +257,38 @@ source /shared-workspace/src/mpc-quadrotor/env_setup.sh
 
 ---
 
-## Project Structure
+## Quick Start
 
-```
-mpc-quadrotor/
-├── quadrotor_mpc_client_v3.py   # Main API (hover, slalom_reactive, slalom_mpc_avoid, slalom_mpc_homotopy, backflip, backflip_mpc_recovery)
-├── local_planner_mpc.py         # Obstacle-aware LocalPlannerMPC
-├── mpc_solver.py                # Core QuadrotorMPC
-├── quadrotor_model.py           # acados dynamic model
-├── global_planner.py            # WaypointTrajectory, BackflipTrajectory, APFTrajectory
-├── perception.py                # PerceptionManager (3 levels)
-├── plot_mpc_log.py              # Log visualizer (auto-saves to plots/)
-├── plot_apf_field.py            # APF force field + potential visualization
-├── plot_backflip.py             # Backflip analysis plots (detailed)
-├── plot_backflip_paper.py       # Backflip paper plot (4-panel, single column)
-├── plot_slalom_paper.py         # Slalom analysis/controls paper plot (per world)
-├── plot_compare_paper.py        # In-MPC vs APF comparison figures
-├── simulation.sh                # Basic simulation stack (no obstacles)
-├── simulation_obstacles.sh      # Obstacle avoidance simulation stack
-├── worlds/
-│   ├── quad.world               # Empty world
-│   ├── quad_obstacles.world     # 3 cylindrical obstacles
-│   ├── quad_obstacles_dense.world  # 5-obstacle alternating slalom
-│   └── quad_obstacles_line.world   # 5 obstacles ON the start->goal line
-├── model/
-│   ├── mrsim-quadrotor-lidar/
-│   │   ├── model.sdf            # Quadrotor with Lidar (+ configuration)
-│   │   └── model.config
-│   └── mrsim-rotor/
-│       ├── model.sdf
-│       └── model.config
-├── plots/                       # Auto-saved plot images
-├── acados_generated/            # Auto-generated solver code
-└── logs/mpc/                    # Test logs (.npz)
-```
+The stack runs in two terminals (inside the tk3lab container).
 
-## Architecture
-
-<img width="2720" height="2320" alt="architecture_diagram" src="https://github.com/user-attachments/assets/fd65240d-b5bc-498c-8834-c995fa556fd6" />
-<img width="2720" height="2400" alt="control_loop_dataflow" src="https://github.com/user-attachments/assets/4bb141d7-4a50-4ee8-90d7-7f662623546c" />
-
----
-
-## Configuration
-
-### Physical Constants
-
-```python
-MASS    = 1.280        # kg (base 1.0 + 4 rotors × 0.07)
-I_DIAG  = (22.916e-3, 22.916e-3, 22.132e-3)  # kg·m²
-ARM_LEN = 0.23         # m
-KF      = 6.5e-4       # N/(rad/s)²
-KM      = 1e-5         # Nm/(rad/s)²
-```
-
-### MPC Parameters
-
-```python
-MPC_N  = 20            # Prediction horizon steps
-MPC_TS = 0.05          # Sampling time [s] → 1.0s horizon
-
-_LOCAL_MPC_KWARGS = dict(
-    n_obs_max=5,                     # Max simultaneous obstacles
-    R_drone=0.30,                    # Drone collision radius [m]
-    W_obs=10000.0,                   # Obstacle slack penalty weight
-)
-```
-
-### Hover Gains
-
-Validated for stable hover (z std=0.21m, zero negative omega²):
-
-```python
-Q_pos=5.0,  Q_vel=3.0,  Q_att=1.5,  Q_omega=25.0,  Q_omega_r=6.0,
-P_scale=5.0, R_f=0.01,  R_tau=0.10, R_tau_z=0.20,
-tau_max=0.20, tau_z_max=0.06, f_min=0.40*MASS*G, f_max_scale=2.5,
-alpha_land=2.0, W_land=500.0
-```
-
-### Slalom / Waypoint Gains (current)
-
-Validated for obstacle avoidance slalom (3 obstacles, max_vel=1.5, qw>0.91, 68% torque sat):
-
-```python
-Q_pos=5.0,  Q_vel=3.0,  Q_att=1.5,  Q_omega=25.0,  Q_omega_r=6.0,
-P_scale=5.0, R_f=0.01,  R_tau=0.10, R_tau_z=0.20,
-tau_max=0.25, tau_z_max=0.06, f_min=0.40*MASS*G, f_max_scale=2.5,
-alpha_land=2.0, W_land=500.0
-```
-
-Difference from hover: `tau_max=0.25` (was 0.20) — 25% more torque authority for turns.
-
-### Perception Levels
-
-| Level | Source | Description |
-| --- | --- | --- |
-| 1 | Gazebo ground truth | Reads obstacle poses from Gazebo (requires model names) |
-| 2 | 2D Lidar | Clusters lidar scan into obstacles |
-| 3 | Static | Manually registered obstacle positions |
-
----
-
-## Testing and Usage
-
-### Terminal 1 — Start Simulation Stack
+**Terminal 1 — simulation:**
 
 ```bash
 cd ~/tk3lab-ws/src/mpc-quadrotor
-
-# Basic (no obstacles):
-bash simulation.sh
-
-# 3-obstacle world:
-bash simulation_obstacles.sh
-
-# 5-obstacle dense slalom:
-bash simulation_obstacles.sh worlds/quad_obstacles_dense.world
-
-# In-line slalom (obstacles ON the start->goal line; forces real avoidance):
-bash simulation_obstacles.sh worlds/quad_obstacles_line.world
+bash simulation_obstacles.sh worlds/quad_obstacles_line.world    # in-line slalom
+# bash simulation_obstacles.sh worlds/quad_obstacles_dense.world # dense slalom
+# bash simulation.sh                                             # empty world (backflips)
 ```
 
-### Terminal 2 — Python Control
+**Terminal 2 — Python control client:**
 
 ```bash
-cd ~/tk3lab-ws/src/mpc-quadrotor
 python3 -i quadrotor_mpc_client_v3.py
 ```
-
-### Hover Test
-
 ```python
->>> setup()
->>> hover(0, 0, 4, T_hover=10, log_tag='hover')
+>>> setup(perception_level=2)   # lidar + DBSCAN perception
 ```
 
-### Waypoint Following
-
-```python
->>> setup()
->>> follow_waypoints([[0,0,3], [4,0.5,3], [8,-0.5,3], [12,0,3]],
-...                   max_vel=0.8, log_tag='waypoints')
-```
-
-### Obstacle Avoidance — Reactive APF (recommended)
-
-```python
-# 3-obstacle world (simulation_obstacles.sh):
->>> setup()
->>> slalom_reactive()
-
-# 5-obstacle dense world with lidar perception:
->>> setup(perception_level=2)
->>> slalom_reactive(use_perception=True, max_vel=2.5)
-```
-
-Real-time APF at each MPC step. No pre-planned waypoints — drone reacts to obstacles online.
-
-With `use_perception=True`, obstacles are detected via 2D lidar (LaserScan → DBSCAN clustering → nearest-neighbor data association) instead of hardcoded positions. Requires `perception_level=2` in `setup()` to enable lidar-based perception.
-
-### Obstacle Avoidance — In-MPC Constraint vs. APF (comparison)
-
-Three avoidance architectures that differ only in **where** avoidance happens.
-Run them on the in-line slalom world (obstacles on the start→goal line, so the
-drone must actively avoid):
-
-```bash
-# Terminal 1
-bash simulation_obstacles.sh worlds/quad_obstacles_line.world
-```
-
-```python
-# Terminal 2
->>> setup(perception_level=2)              # lidar + DBSCAN
-
-# (1) pure-MPC — goal-only reference; the MPC keep-out constraint does ALL the
-#     avoidance (genuine in-controller avoidance). Reliable up to ~1.5 m/s.
->>> slalom_mpc_avoid(max_vel=1.5)
-
-# (2) homotopy — reference gives only a pass-side hint; MPC keep-out enforces
-#     clearance. Logs the constraint slack (evidence the MPC, not the
-#     reference, avoids).
->>> slalom_mpc_homotopy(max_vel=2.0, tangent_gain=0.4)
-
-# (3) APF + MPC tracker — APF reference avoids, MPC just tracks (fast). Tighten
-#     the APF margin to match the in-MPC clearance for a fair comparison:
->>> slalom_reactive(use_perception=True, max_vel=2.2, apf_d0=0.3, apf_R_drone=0.20)
-```
-
-| Function | Reference generator | Avoidance done by |
-|---|---|---|
-| `slalom_mpc_avoid` | `_goal_horizon` (goal only) | MPC keep-out constraint |
-| `slalom_mpc_homotopy` | `_homotopy_horizon` (goal + side hint) | MPC keep-out constraint |
-| `slalom_reactive` | `_apf_horizon` (full APF) | APF planner (MPC tracks) |
-
-Key parameters:
-- `max_vel` — commanded cruise speed (swept to find the reliable ceiling).
-- `safety_margin` (avoid / homotopy) — extra keep-out radius added per obstacle.
-- `tangent_gain` (homotopy) — strength of the pass-side hint.
-- `apf_d0`, `apf_R_drone` (reactive) — APF influence distance and drone radius;
-  lower values → tighter clearance (used to match the in-MPC margin).
-
-Finding: at a matched ~0.9 m clearance, in-MPC avoidance is reliable to
-1.5 m/s and APF+MPC to 2.2 m/s; both fail above that via the same
-attitude-runaway instability (see the paper). The default `slalom_reactive`
-(wide APF berth) reaches 2.81 m/s.
-
-### Obstacle Avoidance — Offline APF
-
-```python
-# Use simulation_obstacles.sh world
->>> setup()
->>> slalom()
-```
-
-Pre-plans full path with APF, fits quintic polynomials, MPC tracks. Faster but less reliable on sharp turns.
-
-### Backflip
-
-```python
-# Use simulation.sh (no obstacles, needs altitude clearance)
->>> setup()
->>> backflip()                # basic version, SO(3) PD recovery
->>> backflip_ilc()            # tuned params + PD position-feedback recovery
->>> backflip_mpc_recovery()   # feedforward flip + genuine NMPC recovery (paper version)
-```
-
-Lupashin 5-phase bang-coast-bang backflip:
-1. MPC climb to 10m and hover
-2. Open-loop pop-up impulse (2.0×mg for 0.40s)
-3. Open-loop flip: accel(+τ) → coast(freefall) → decel(-τ), body-rate integrated angle tracking with dynamic decel start
-4. Recovery — see variants below
-5. MPC return to the pre-flip hover point and landing
-
-**Recovery variants:**
-- `backflip()` — SO(3) quaternion-based PD recovery with velocity damping.
-- `backflip_ilc()` — tuned flip params (f_accel=8.77N, f_decel=8.81N) + position feedback (K_pos=0.05) on the SO(3) PD recovery.
-- `backflip_mpc_recovery()` — **the flip is open-loop feedforward, but recovery is done by the NMPC** (Phase 4a: brief open-loop rate-kill to bring rates into the solver's basin; Phase 4b: NMPC with boosted attitude/rate damping stabilises and returns to hover). Uses a faster flip (`tau_flip=1.1`Nm) to cut drift, and `_run_loop(..., f_min_clamp=0.0)` so the recovery NMPC may command near-zero thrust. This is the variant used for the paper figures.
-
-**Typical results — `backflip_mpc_recovery()` (good flip exit, qw ≈ -1 full inversion):**
-
-| Metric | Value |
-| --- | --- |
-| Flip duration | ~0.73s |
-| Peak pitch rate | ~9.5 rad/s |
-| Peak lateral drift | ~1.7m (at flip exit) |
-| Altitude loss | none (fast flip; min z ≥ hover) |
-| Landing error from hover | ~0.1m |
-| Recovery via | NMPC (Phase 4b) |
-
-> Note: `backflip_mpc_recovery()` with `tau_flip=1.1` is the most consistent low-drift variant. Lowering `f_bang` below 0.70·mg reduces drift further but makes the flip unreliable (insufficient vertical support → altitude loss / tumble); kept at 0.70·mg.
-
-### Manual Control
-
-```python
->>> setup()
->>> start()
->>> set_position(0, 0, 2, T_hold=5)
->>> set_position(3, 1, 2, T_hold=5)
->>> landing()
-```
-
-### Emergency Stop
-
-```python
->>> stop()
-```
+Then call any demo from the sections below. See the report PDF for the full API
+and parameter tables.
 
 ---
 
-## Obstacle Avoidance
+## Report
 
-### Architecture: APF + MPC
+The full write-up is in **[`Obstacle_Aware_Quadrotor_NMPC.pdf`](Obstacle_Aware_Quadrotor_NMPC.pdf)**.
 
-Two-layer approach combining Artificial Potential Fields (APF) for path planning with NMPC for trajectory tracking (Khatib 1986, Ge & Cui 2000):
+**Authors:** Gizem Doğa Filiz, İsmail Cem Yılmaz, Ivano Bazzo.
 
-**Reactive mode (`slalom_reactive`)** — recommended:
-```
-Every 50ms:  Current Position → APF Force → Velocity Reference → MPC Horizon → Motor Commands
-```
-No pre-planned path. APF computes velocity direction at each MPC step. Extends to lidar-based perception.
-
-**Offline mode (`slalom`):**
-```
-APF Path (offline) → Downsample → Quintic Polynomial → MPC Tracker (online)
-```
-Pre-plans full path, fits smooth trajectory, MPC tracks. Faster peak speed but less reliable on sharp turns.
-
-### APF Force Model
-
-Attractive force pulls toward goal, repulsive force pushes away from obstacles with a rotational tangent component:
-
-```
-F_att = k_att × (goal - pos) / ||goal - pos||        (capped at k_att)
-F_rep = k_rep × (1/margin - 1/d0) × (1/margin²) × (radial + 0.5 × tangent)
-```
-
-Tangent direction per obstacle: `sign(cross(line_dir, obs_offset))` — obstacle left of start→goal line → pass right, and vice versa. Creates natural slalom pattern.
-
-### World Layouts
-
-**Original (`quad_obstacles.world`) — 3 obstacles:**
-
-```
-                       obs2(6, 1.5)
-Start(0,0)  →  obs1(3,0)  ────────────────  obs3(9,-1)  →  Goal(12,0)
-                 🔴 r=0.4      🟠 r=0.4        🔵 r=0.4
-```
-
-**Dense (`quad_obstacles_dense.world`) — 5 obstacles, alternating slalom:**
-
-```
-     y
- 1.5┊       ○2(6)          ○4(12)
-    ┊
-  0 ─S┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄G(18,0)→ x
-    ┊
--1.5┊    ○1(3)       ○3(9)        ○5(15)
-    ┊
-    0  3  6  9  12  15  18
-```
-
-All obstacles: radius=0.4m, height=3.0m. Obstacles alternate y=±1.5 to force zigzag weaving. Margin = 1.5 - 0.4 - 0.5 = 0.60m per side.
-
-### APF Parameters
-
-| Parameter | Original (3-obs) | Dense (5-obs) |
-| --- | --- | --- |
-| k_att | 1.0 | 1.0 |
-| k_rep | 0.8 | 0.8 |
-| d0 | 2.5 m | 2.5 m |
-| R_drone (APF) | 0.65 m | 0.50 m |
-| tangent_weight | 0.5 | 0.5 |
-| max_vel | 2.5 m/s | 2.5 m/s |
-| goal | (12, 0) | (18, 0) |
-
-### Reactive Slalom Results — Original World
-
-| Metric | Value |
-| --- | --- |
-| Duration | 21.0s |
-| MPC solve time | 8.7ms avg |
-| Obstacles avoided | 3 |
-| Min distance to obs1 | 1.28m |
-| Min distance to obs2 | 2.47m |
-| Min distance to obs3 | 1.42m |
-| Max speed | 2.83 m/s |
-| Torque saturation | 49% |
-| qw min | 0.987 (stable) |
-
-### Reactive Slalom Results — Dense World (Lidar Perception)
-
-| Metric | Value |
-| --- | --- |
-| Duration | ~25s |
-| Obstacles | 5 (detected via 2D lidar) |
-| Avg speed | 1.28 m/s |
-| Obstacle margins | 0.9–1.9m |
-| Perception | DBSCAN clustering + nearest-neighbor association |
-
-### Perception Pipeline (Lidar Mode)
-
-```
-LaserScan (360° 2D) → Polar-to-Cartesian → DBSCAN Clustering → (position, radius)
-                                                ↓
-                               Nearest-Neighbor Data Association (1.5m threshold)
-                                                ↓
-                                    APF Sign Stability (cross-product)
-```
-
-Filtering: radius > 1.0m rejected, obstacles behind drone (x < drone_x - 1.5) ignored, |y| > 5.0m rejected.
-
-### Visualization
-
-APF force field and potential surface visualization:
-
-```bash
-python3 plot_apf_field.py                                         # dense world, lidar log
-python3 plot_apf_field.py --world original                        # original 3-obstacle world
-python3 plot_apf_field.py logs/mpc/slalom/mpc_log.npz --world original  # offline log
-```
-
----
-
-## Log Analysis
-
-Logs saved to `logs/mpc/<log_tag>/mpc_log.npz`.
-
-```python
-import numpy as np
-
-data = np.load('logs/mpc/slalom/mpc_log.npz')
-t        = data['t']          # (N,)     Time [s]
-x        = data['x']          # (N, 13)  State vector
-u        = data['u']          # (M, 4)   Control input [f, τx, τy, τz]
-xref     = data['xref']       # (N, 13)  Reference trajectory
-mpc_times= data['mpc_times']  # (M,)     MPC solver times [ms]
-n_obs    = data['n_obs']      # (M,)     Number of active obstacles
-```
-
-### Plot Generation
-
-```bash
-# Inside Docker:
-python3 plot_mpc_log.py logs/mpc/slalom/mpc_log.npz
-
-# From host (plots auto-saved to mpc-quadrotor/plots/):
-python3 plot_mpc_log.py --save logs/mpc/slalom/mpc_log.npz
-```
-
-### Avoidance-Comparison Tools
-
-```bash
-# Paper-ready comparison figures (trajectory / ceiling / runaway):
-python3 plot_compare_paper.py
-
-# Pure-MPC slalom analysis + controls (5-panel), styled like the paper:
-python3 plot_slalom_paper.py --world line
-```
-
----
-
-## References
-
-1. O. Khatib, "Real-Time Obstacle Avoidance for Manipulators and Mobile Robots," *The International Journal of Robotics Research*, vol. 5, no. 1, pp. 90–98, 1986. [DOI: 10.1177/027836498600500106](https://doi.org/10.1177/027836498600500106)
-
-2. S. S. Ge and Y. J. Cui, "New Potential Functions for Mobile Robot Path Planning," *IEEE Transactions on Robotics and Automation*, vol. 16, no. 5, pp. 615–620, 2000. [DOI: 10.1109/70.880813](https://doi.org/10.1109/70.880813)
-
-3. S. Lupashin, A. Schöllig, M. Sherback, and R. D'Andrea, "A Simple Learning Strategy for High-Speed Quadrocopter Multi-Flips," in *Proc. IEEE International Conference on Robotics and Automation (ICRA)*, pp. 1642–1648, 2010. [DOI: 10.1109/ROBOT.2010.5509452](https://doi.org/10.1109/ROBOT.2010.5509452)
-
-4. R. Verschueren, G. Frison, D. Kouzoupis, et al., "acados — A Modular Open-Source Framework for Fast Embedded Optimal Control," *Mathematical Programming Computation*, vol. 14, no. 1, pp. 147–183, 2022. [DOI: 10.1007/s12532-021-00208-8](https://doi.org/10.1007/s12532-021-00208-8)
-
----
-
-## Contributing
-
-Politecnico di Milano — Aerial Robotics 2025-26.
-
-For questions or issues, please open a GitHub issue.
+Key reference: S. Lupashin *et al.*, "A simple learning strategy for high-speed
+quadrocopter multi-flips," *ICRA*, 2010.
