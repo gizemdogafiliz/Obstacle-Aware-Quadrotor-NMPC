@@ -131,10 +131,20 @@ handles the recovery**: a brief rate-kill brings the body rates into the solver'
 basin, then the NMPC stabilises the attitude, arrests the drift and returns the
 vehicle to the hover point.
 
+<p align="center">
+  <img src="assets/backflip_demo.gif" height="300"/>
+  <img src="assets/backflip_xy.png" height="300"/>
+</p>
+
+<p align="center">
+  <em>Left: the maneuver. Right: top view of the flip-and-recover trajectory —
+  pushed laterally during the open-loop rotation, then pulled back to hover by
+  the NMPC.</em>
+</p>
+
 <table align="center">
 <tr>
-<td align="center"><img src="assets/backflip_demo.gif" height="300"/></td>
-<td align="center"><img src="assets/backflip_xy.png" height="300"/></td>
+<td align="center"><img src="assets/backflip_analysis.png" width="300"/></td>
 <td>
 <table>
 <tr><th align="left">Metric</th><th align="left">Value</th></tr>
@@ -142,21 +152,11 @@ vehicle to the hover point.
 <tr><td>Peak pitch rate</td><td>~9.5 rad/s</td></tr>
 <tr><td>Peak lateral drift</td><td>~1.7 m</td></tr>
 <tr><td>Landing error</td><td>~0.1 m</td></tr>
-<tr><td>Recovery</td><td>NMPC</td></tr>
+<tr><td>Recovery</td><td>NMPC (closed-loop)</td></tr>
 </table>
 </td>
 </tr>
 </table>
-
-<p align="center">
-  <em>Left: the maneuver. Centre: top view of the flip-and-recover trajectory —
-  pushed laterally during the open-loop rotation, then pulled back to hover by
-  the NMPC. Right: key metrics.</em>
-</p>
-
-<p align="center">
-  <img src="assets/backflip_analysis.png" width="382"/>
-</p>
 
 **Run it** — Terminal 1 (empty world, needs altitude clearance):
 
