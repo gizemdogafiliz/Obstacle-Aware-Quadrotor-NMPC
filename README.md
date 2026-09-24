@@ -1,3 +1,5 @@
+# Quadrotor NMPC: Obstacle-Aware Local Planner
+
 ## Project information
 
 **Project title:** Obstacle-Aware Quadrotor Control via Nonlinear MPC and Artificial Potential Fields
@@ -16,8 +18,6 @@ that generates references the NMPC tracks. Obstacles are detected online
 from a 2-D lidar via DBSCAN clustering. A feedforward backflip maneuver
 with NMPC-based post-flip recovery is additionally provided as a code
 feature (not part of the report study).
-
-# Quadrotor NMPC: Obstacle-Aware Local Planner
 
 An **acados SQP-RTI** based Nonlinear Model Predictive Control (NMPC)
 framework for quadrotor autonomous flight in Gazebo.
