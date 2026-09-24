@@ -1,5 +1,3 @@
-# 2026b-yilmaz_filiz
-
 ## Project information
 
 **Project title:** Obstacle-Aware Quadrotor Control via Nonlinear MPC and Artificial Potential Fields
@@ -18,16 +16,6 @@ that generates references the NMPC tracks. Obstacles are detected online
 from a 2-D lidar via DBSCAN clustering. A feedforward backflip maneuver
 with NMPC-based post-flip recovery is additionally provided as a code
 feature (not part of the report study).
-
-**Team composition:**
-
-| Name | Surname | University Email | Matricola |
-|--------|--------|--------|--------|
-| Gizem Doğa | Filiz | gizemdoga.filiz@mail.polimi.it | 304864 |
-| İsmail Cem | Yılmaz | ismailcem.yilmaz@mail.polimi.it | 300436 |
-
-
-***
 
 # Quadrotor NMPC: Obstacle-Aware Local Planner
 
@@ -695,7 +683,6 @@ nmpc-quadrotor/
 The full write-up is in
 **[`Obstacle_Aware_Quadrotor_NMPC.pdf`](Obstacle_Aware_Quadrotor_NMPC.pdf)**.
 
-**Authors:** Gizem Doğa Filiz, İsmail Cem Yılmaz.
 
 ## References
 
